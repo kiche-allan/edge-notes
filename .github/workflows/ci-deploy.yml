@@ -1,0 +1,60 @@
+name: CI and deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Type-check and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  deploy:
+    name: Deploy to the VPS
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.VPS_SSH_KEY != '' }}
+    steps:
+      - name: Skip until the VPS secrets are added
+        if: env.HAS_KEY != 'true'
+        run: echo "::notice::VPS_SSH_KEY is not set yet. Run scripts/vps-setup.sh on the VPS and add the secrets it prints."
+      - name: Pull and restart on the VPS
+        if: env.HAS_KEY == 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          command_timeout: 20m
+          script: |
+            set -e
+            cd /opt/edge-notes
+            git fetch --quiet origin main
+            git reset --quiet --hard origin/main
+            docker compose up -d --build
+            docker image prune -f >/dev/null
+            PORT=$(grep '^WEB_PORT=' .env | cut -d= -f2)
+            for i in $(seq 1 40); do
+              if curl -fsS "http://127.0.0.1:${PORT:-8080}/api/health"; then echo; echo "Deployed $(git rev-parse --short HEAD)"; exit 0; fi
+              sleep 3
+            done
+            docker compose logs --tail 80 web
+            exit 1

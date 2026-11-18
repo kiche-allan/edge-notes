@@ -1,0 +1,33 @@
+# Edge Notes: the site plus its own Postgres (with pgvector). Values come from .env
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-edge_notes}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-edge} -d ${POSTGRES_DB:-edge_notes}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    # No ports published: only the web container can reach the database.
+
+  web:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-edge}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-edge_notes}
+      SITE_URL: ${SITE_URL:-}
+      USSD_SECRET: ${USSD_SECRET:-}
+    ports:
+      - "${WEB_PORT:-8080}:3000"
+
+volumes:
+  pgdata:
